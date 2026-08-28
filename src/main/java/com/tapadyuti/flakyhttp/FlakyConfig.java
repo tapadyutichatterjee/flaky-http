@@ -4,8 +4,29 @@ import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
- * Configuration for the {@link FlakyHttpClient}.
- * This class is immutable and should be created using the {@link Builder}.
+ * Immutable configuration that controls how a {@link FlakyHttpClient} injects
+ * latency and synthetic HTTP failures.
+ *
+ * <p>Instances are created with {@link #builder()}. The default configuration
+ * targets every request, adds no latency, never injects a failure, and uses
+ * status {@code 500} if failure injection is later enabled.</p>
+ *
+ * <p>The class is immutable and safe to share between threads. A configured
+ * {@link LatencyStrategy}, however, is application-supplied behavior and must
+ * itself be thread-safe when the client is used concurrently.</p>
+ *
+ * <h2>Example</h2>
+ * <pre>{@code
+ * FlakyConfig config = FlakyConfig.builder()
+ *         .failureRate(0.25)
+ *         .latency(LatencyStrategy.random(50, 200))
+ *         .errorStatus(503)
+ *         .targetUrls("https://api\\.example\\.com/.*")
+ *         .build();
+ * }</pre>
+ *
+ * @see FlakyHttpClient
+ * @see LatencyStrategy
  */
 public final class FlakyConfig {
     private final double failureRate;
@@ -21,52 +42,63 @@ public final class FlakyConfig {
     }
 
     /**
-     * Returns the probability of failure (0.0 to 1.0).
+     * Returns the probability that a targeted request receives a synthetic
+     * response instead of being delegated to the underlying HTTP client.
+     * A value of {@code 0.0} disables failures; {@code 1.0} guarantees them.
      *
-     * @return the failure rate.
+     * @return the failure probability in the inclusive range {@code [0.0, 1.0]}
      */
     public double getFailureRate() {
         return failureRate;
     }
 
     /**
-     * Returns the strategy used to calculate artificial latency.
+     * Returns the strategy used to calculate artificial latency for each
+     * targeted request. Latency is applied before the failure decision, so
+     * both synthetic failures and delegated requests are delayed.
      *
-     * @return the latency strategy, or null if no latency is configured.
+     * @return the latency strategy, or {@code null} when latency is disabled
      */
     public LatencyStrategy getLatencyStrategy() {
         return latencyStrategy;
     }
 
     /**
-     * Returns the HTTP status code to be returned during a failure.
+     * Returns the HTTP error status used for synthetic responses.
      *
-     * @return the error status code.
+     * @return an HTTP status in the range {@code 400} through {@code 599}
      */
     public int getErrorStatus() {
         return errorStatus;
     }
 
     /**
-     * Returns the compiled regex pattern for targeting specific URLs.
+     * Returns the compiled pattern used to select requests for injection.
+     * The pattern is evaluated with {@link java.util.regex.Matcher#matches()},
+     * against the complete value of {@link java.net.http.HttpRequest#uri()}
+     * converted to a string.
      *
-     * @return the target URL pattern, or null if no specific target is configured.
+     * @return the target URL pattern, or {@code null} when every URL is targeted
      */
     public Pattern getTargetUrlPattern() {
         return targetUrlPattern;
     }
 
     /**
-     * Creates a new builder for {@link FlakyConfig}.
+     * Creates a builder initialized with the documented defaults.
      *
-     * @return a new Builder instance.
+     * @return a new, independent builder
      */
     public static Builder builder() {
         return new Builder();
     }
 
     /**
-     * Fluent Builder for {@link FlakyConfig}.
+     * Fluent builder for {@link FlakyConfig}.
+     *
+     * <p>A builder is mutable and not thread-safe. The object returned by
+     * {@link #build()} is immutable; later changes to the builder do not alter
+     * previously built configurations.</p>
      */
     public static class Builder {
         private double failureRate = 0.0;
@@ -75,11 +107,19 @@ public final class FlakyConfig {
         private Pattern targetUrlPattern = null;
 
         /**
-         * Sets the failure rate.
+         * Creates a builder with no failures, no latency, status {@code 500},
+         * and no URL restriction.
+         */
+        public Builder() {
+        }
+
+        /**
+         * Sets the independent probability of failure for each targeted call.
          *
-         * @param rate A value between 0.0 and 1.0.
-         * @return the builder instance.
-         * @throws IllegalArgumentException if rate is not between 0.0 and 1.0.
+         * @param rate a finite value in the inclusive range {@code [0.0, 1.0]}
+         * @return this builder
+         * @throws IllegalArgumentException if {@code rate} is non-finite or
+         *                                  outside the accepted range
          */
         public Builder failureRate(double rate) {
             if (!Double.isFinite(rate) || rate < 0.0 || rate > 1.0) {
@@ -90,10 +130,11 @@ public final class FlakyConfig {
         }
 
         /**
-         * Sets the latency strategy.
+         * Sets the strategy evaluated once for each targeted request.
          *
-         * @param strategy The {@link LatencyStrategy} to use.
-         * @return the builder instance.
+         * @param strategy a non-null, thread-safe latency strategy
+         * @return this builder
+         * @throws NullPointerException if {@code strategy} is {@code null}
          */
         public Builder latency(LatencyStrategy strategy) {
             this.latencyStrategy = Objects.requireNonNull(strategy, "strategy");
@@ -101,10 +142,13 @@ public final class FlakyConfig {
         }
 
         /**
-         * Sets the HTTP status code to return on failure.
+         * Sets the status code returned by a synthetic failure response.
          *
-         * @param statusCode The HTTP status code (e.g., 500, 429).
-         * @return the builder instance.
+         * @param statusCode an HTTP client or server error from {@code 400} to
+         *                   {@code 599}, inclusive
+         * @return this builder
+         * @throws IllegalArgumentException if the status is outside
+         *                                  {@code 400} through {@code 599}
          */
         public Builder errorStatus(int statusCode) {
             if (statusCode < 400 || statusCode > 599) {
@@ -115,11 +159,14 @@ public final class FlakyConfig {
         }
 
         /**
-         * Sets the regex pattern to target specific URLs for chaos injection.
+         * Sets the regular expression used to target requests for injection.
+         * The expression must match the complete URI string. For example,
+         * {@code https://api\.example\.com/.*} targets every path on that host.
          *
-         * @param regex The regular expression to match against request URLs.
-         * @return the builder instance.
-         * @throws IllegalArgumentException if regex is null.
+         * @param regex a non-null Java regular expression
+         * @return this builder
+         * @throws IllegalArgumentException if {@code regex} is {@code null}
+         * @throws java.util.regex.PatternSyntaxException if the expression is invalid
          */
         public Builder targetUrls(String regex) {
             if (regex == null) {
@@ -130,9 +177,9 @@ public final class FlakyConfig {
         }
 
         /**
-         * Builds the {@link FlakyConfig} instance.
+         * Creates an immutable snapshot of the current builder state.
          *
-         * @return a fully configured FlakyConfig object.
+         * @return a new configuration
          */
         public FlakyConfig build() {
             return new FlakyConfig(this);

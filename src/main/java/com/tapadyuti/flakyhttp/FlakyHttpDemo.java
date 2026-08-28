@@ -7,10 +7,28 @@ import java.net.http.HttpResponse;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * Demonstration of how to use the FlakyHttp library as a drop-in replacement
- * for the standard {@link HttpClient}.
+ * Command-line demonstration of synchronous and asynchronous
+ * {@link FlakyHttpClient} usage.
+ *
+ * <p>The program targets Google requests with random latency and a 30 percent
+ * probability of a synthetic {@code 503}, while requests to example.com bypass
+ * injection. It performs real public-network requests and is intended for
+ * manual exploration rather than automated testing.</p>
+ *
+ * <p>{@code FlakyHttpClient} wraps rather than subclasses {@link HttpClient}, so
+ * the demonstration uses the wrapper type explicitly.</p>
  */
-public class FlakyHttpDemo {
+public final class FlakyHttpDemo {
+    private FlakyHttpDemo() {
+        // Utility class.
+    }
+
+    /**
+     * Runs the demonstration, prints status and timing information for targeted
+     * and non-targeted calls, and shuts down the internally owned scheduler.
+     *
+     * @param args command-line arguments; currently ignored
+     */
     public static void main(String[] args) {
         System.out.println("=== Starting FlakyHttp Demo ===\n");
 

@@ -19,11 +19,48 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * A wrapper around {@link HttpClient} that injects artificial failures and latency
- * based on the provided {@link FlakyConfig}.
+ * Composition-based wrapper around {@link HttpClient} that injects artificial
+ * latency and synthetic HTTP error responses.
  *
- * <p>This class uses the Composition pattern to delegate actual network calls to a real {@link HttpClient}
- * while applying chaos logic before the request is executed.</p>
+ * <p>For a targeted request, the client performs these operations in order:</p>
+ * <ol>
+ *   <li>obtain and apply the configured artificial latency;</li>
+ *   <li>make an independent random failure decision;</li>
+ *   <li>return a synthetic response on failure, or delegate the real request.</li>
+ * </ol>
+ *
+ * <p>A synthetic failure does not perform network I/O. Its empty body is
+ * converted by the supplied {@link HttpResponse.BodyHandler}, its status comes
+ * from {@link FlakyConfig#getErrorStatus()}, and its request, URI, and preferred
+ * HTTP version reflect the original request and delegate. See
+ * {@link MockHttpResponse} for the remaining response metadata.</p>
+ *
+ * <p>This type deliberately does not extend {@code HttpClient}; callers must use
+ * it directly or place both clients behind an application-owned abstraction.
+ * Instances may be used concurrently provided that the delegate, configured
+ * latency strategy, supplied scheduler, and body handlers support the same use.</p>
+ *
+ * <p>The two-argument constructor owns an internal daemon scheduler and should
+ * be used with try-with-resources. The three-argument constructor borrows its
+ * scheduler and never shuts it down.</p>
+ *
+ * <h2>Example</h2>
+ * <pre>{@code
+ * FlakyConfig config = FlakyConfig.builder()
+ *         .failureRate(1.0)
+ *         .errorStatus(503)
+ *         .build();
+ *
+ * try (FlakyHttpClient client =
+ *              new FlakyHttpClient(HttpClient.newHttpClient(), config)) {
+ *     HttpResponse<String> response =
+ *             client.send(request, HttpResponse.BodyHandlers.ofString());
+ * }
+ * }</pre>
+ *
+ * @see FlakyConfig
+ * @see LatencyStrategy
+ * @see MockHttpResponse
  */
 public final class FlakyHttpClient implements AutoCloseable {
     private final HttpClient delegate;
@@ -32,12 +69,16 @@ public final class FlakyHttpClient implements AutoCloseable {
     private final boolean ownsScheduler;
 
     /**
-     * Creates a new FlakyHttpClient.
+     * Creates a client that uses a caller-owned scheduler for asynchronous
+     * artificial delays.
      *
-     * @param delegate The real {@link HttpClient} instance to delegate to.
-     * @param config   The configuration for failure rates and latency.
-     * @param scheduler An executor service used to handle asynchronous delays.
-     *                  It remains owned by the caller and must not be null.
+     * <p>Calling {@link #close()} or {@link #shutdown()} does not shut down the
+     * supplied scheduler. Its lifecycle remains the caller's responsibility.</p>
+     *
+     * @param delegate the real HTTP client used for non-failing requests
+     * @param config the immutable injection configuration
+     * @param scheduler the caller-owned scheduler used for asynchronous delays
+     * @throws NullPointerException if any argument is {@code null}
      */
     public FlakyHttpClient(HttpClient delegate, FlakyConfig config, ScheduledExecutorService scheduler) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
@@ -47,10 +88,13 @@ public final class FlakyHttpClient implements AutoCloseable {
     }
 
     /**
-     * Overloaded constructor that creates a default scheduler if none is provided.
+     * Creates a client with an internally owned single-threaded daemon scheduler.
+     * The scheduler thread is named {@code flaky-http-scheduler} and is used only
+     * to begin asynchronous work after an artificial delay.
      *
-     * @param delegate The real {@link HttpClient} instance to delegate to.
-     * @param config   The configuration for failure rates and latency.
+     * @param delegate the real HTTP client used for non-failing requests
+     * @param config the immutable injection configuration
+     * @throws NullPointerException if either argument is {@code null}
      */
     public FlakyHttpClient(HttpClient delegate, FlakyConfig config) {
         this.delegate = Objects.requireNonNull(delegate, "delegate");
@@ -64,15 +108,23 @@ public final class FlakyHttpClient implements AutoCloseable {
     }
 
     /**
-     * Sends a synchronous request.
+     * Sends a request synchronously, applying configured injection behavior when
+     * the request URI is targeted.
      *
-     * @param request                The request to send.
-     * @param responseBodyHandler    The handler to use to process the response body.
-     * @param <T>                    The type of the response body.
-     * @return The response.
-     * @throws IOException              If an I/O error occurs.
-     * @throws InterruptedException     If the operation is interrupted.
-     * @throws CompletionException      If the request fails.
+     * <p>Artificial latency blocks the calling thread and is outside the
+     * delegate's request timeout. If the delay is interrupted, this method
+     * propagates {@link InterruptedException} and does not delegate the request.
+     * When a synthetic failure is selected, the body handler consumes an empty
+     * body and the delegate is not invoked.</p>
+     *
+     * @param request the request to send
+     * @param responseBodyHandler the handler used for a real or synthetic body
+     * @param <T> the response body type produced by the handler
+     * @return the synthetic response or the delegate's response
+     * @throws IOException if the delegated request encounters an I/O error
+     * @throws InterruptedException if artificial latency or delegation is interrupted
+     * @throws CompletionException if processing a synthetic body completes exceptionally
+     * @throws NullPointerException if an argument is {@code null}
      */
     public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler)
             throws IOException, InterruptedException {
@@ -88,12 +140,27 @@ public final class FlakyHttpClient implements AutoCloseable {
     }
 
     /**
-     * Sends an asynchronous request.
+     * Sends a request asynchronously, applying configured injection behavior
+     * without blocking the calling thread.
      *
-     * @param request            The request to send.
-     * @param responseBodyHandler The handler to use to process the response body.
-     * @param <T>                The type of the response body.
-     * @return A {@link CompletableFuture} that will be completed when the response is received.
+     * <p>For targeted requests, the configured delay is scheduled first. After
+     * the delay, the future is completed with a synthetic response or linked to
+     * {@link HttpClient#sendAsync(HttpRequest, HttpResponse.BodyHandler)} on the
+     * delegate. Cancelling the returned future cancels a pending scheduled task
+     * and attempts to cancel delegate work that has already begun.</p>
+     *
+     * <p>For non-targeted requests, this method returns the delegate's future
+     * directly. Consequently, its exact cancellation and exception behavior is
+     * the delegate's behavior.</p>
+     *
+     * @param request the request to send
+     * @param responseBodyHandler the handler used for a real or synthetic body
+     * @param <T> the response body type produced by the handler
+     * @return a future for the synthetic or delegated response
+     * @throws NullPointerException if an argument is {@code null}
+     * @throws java.util.concurrent.RejectedExecutionException if a targeted
+     *         request cannot be scheduled, including after an owned scheduler
+     *         has been shut down
      */
     public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
         if (shouldInjectChaos(request)) {
@@ -180,7 +247,15 @@ public final class FlakyHttpClient implements AutoCloseable {
     }
 
     /**
-     * Shuts down the internal scheduler.
+     * Initiates an orderly shutdown of the internally owned scheduler.
+     *
+     * <p>This method is idempotent. It has no effect when the client was created
+     * with a caller-owned scheduler. Tasks that have already been scheduled are
+     * allowed to execute according to {@link ScheduledExecutorService#shutdown()}.
+     * Subsequent targeted asynchronous requests on a client whose internal
+     * scheduler has been shut down may be rejected.</p>
+     *
+     * @see #close()
      */
     public void shutdown() {
         if (ownsScheduler) {
@@ -188,6 +263,12 @@ public final class FlakyHttpClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Releases scheduler resources owned by this client.
+     *
+     * <p>This method is equivalent to {@link #shutdown()} and does not close the
+     * wrapped {@link HttpClient} or a caller-supplied scheduler.</p>
+     */
     @Override
     public void close() {
         shutdown();
