@@ -7,7 +7,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ThreadLocalRandom;
@@ -85,19 +84,6 @@ public class FlakyHttpClient {
      * @return A {@link CompletableFuture} that will be completed when the response is received.
      */
     public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler) {
-        return sendAsync(request, responseBodyHandler, null);
-    }
-
-    /**
-     * Sends an asynchronous request.
-     *
-     * @param request            The request to send.
-     * @param responseBodyHandler The handler to use to process the response body.
-     * @param executor           The executor to use for async processing.
-     * @param <T>                The type of the response body.
-     * @return A {@link CompletableFuture} that will be completed when the response is received.
-     */
-    public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> responseBodyHandler, Executor executor) {
         if (shouldInjectChaos(request)) {
             long delay = config.getLatencyStrategy() != null ? config.getLatencyStrategy().getDelayMillis() : 0;
 
@@ -107,7 +93,7 @@ public class FlakyHttpClient {
                 if (shouldFail()) {
                     future.complete(createMockResponse(request));
                 } else {
-                    delegate.sendAsync(request, responseBodyHandler, executor)
+                    delegate.sendAsync(request, responseBodyHandler)
                             .thenAccept(future::complete)
                             .exceptionally(ex -> {
                                 future.completeExceptionally(ex);
@@ -119,7 +105,7 @@ public class FlakyHttpClient {
             return future;
         }
 
-        return delegate.sendAsync(request, responseBodyHandler, executor);
+        return delegate.sendAsync(request, responseBodyHandler);
     }
 
     private boolean shouldInjectChaos(HttpRequest request) {

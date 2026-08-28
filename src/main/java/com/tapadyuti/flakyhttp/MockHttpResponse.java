@@ -1,8 +1,11 @@
 package com.tapadyuti.flakyhttp;
 
+import java.net.URI;
+import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -35,8 +38,8 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
     }
 
     @Override
-    public Optional<HttpHeaders> headers() {
-        return Optional.empty();
+    public HttpHeaders headers() {
+        return HttpHeaders.of(Map.of(), (a, b) -> true);
     }
 
     @Override
@@ -50,6 +53,15 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
     }
 
     @Override
+    public URI uri() {
+        return request.uri();
+    }
+
+    @Override
+    public Optional<javax.net.ssl.SSLSession> sslSession() {
+        return Optional.empty();
+    }
+
     public long contentLength() {
         if (body == null) {
             return 0;
@@ -66,7 +78,7 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
     }
 
     @Override
-    public HttpRequest.Version version() {
-        return HttpRequest.Version.HTTP_2;
+    public HttpClient.Version version() {
+        return HttpClient.Version.HTTP_2;
     }
 }

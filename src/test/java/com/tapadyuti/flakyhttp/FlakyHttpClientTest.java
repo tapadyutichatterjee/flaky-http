@@ -46,8 +46,9 @@ class FlakyHttpClientTest {
                 .build();
 
         FlakyHttpClient flakyClient = new FlakyHttpClient(mockDelegate, config);
-        
-        when(mockDelegate.send(any(), any())).thenReturn(mockResponse);
+
+        when(mockDelegate.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenReturn((HttpResponse) mockResponse);
 
         Instant start = Instant.now();
         flakyClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -79,8 +80,9 @@ class FlakyHttpClientTest {
                 .build();
 
         FlakyHttpClient flakyClient = new FlakyHttpClient(mockDelegate, config);
-        
-        when(mockDelegate.send(any(), any())).thenReturn(mockResponse);
+
+        when(mockDelegate.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenReturn((HttpResponse) mockResponse);
 
         HttpResponse<String> response = flakyClient.send(request, HttpResponse.BodyHandlers.ofString());
 
@@ -104,7 +106,8 @@ class FlakyHttpClientTest {
                 .GET()
                 .build();
 
-        when(mockDelegate.send(any(), any())).thenReturn(mockResponse);
+        when(mockDelegate.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenReturn((HttpResponse) mockResponse);
 
         HttpResponse<String> response = flakyClient.send(stableRequest, HttpResponse.BodyHandlers.ofString());
 
