@@ -1,0 +1,67 @@
+name: Publish to Maven Central
+
+# Triggers: published GitHub release, or explicit manual dispatch.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# Least-privilege: read-only repository access is sufficient.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build · Test · Sign · Upload
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository (full history + tags)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 11 with Maven dependency cache
+        uses: actions/setup-java@v5
+        with:
+          java-version: '11'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # Import the GPG private key from secrets into the runner's keyring.
+      - name: Import GPG private key
+        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      # Create a temporary Maven settings file that supplies Central credentials.
+      - name: Create CI Maven settings
+        run: |
+          mkdir -p "${HOME}/.m2"
+          cat > "${HOME}/.m2/settings.xml" << 'SETTINGS'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                    xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0
+                                        https://maven.apache.org/xsd/settings-1.0.0.xsd">
+            <servers>
+              <server>
+                <id>central</id>
+                <username>${env.CENTRAL_TOKEN_USERNAME}</username>
+                <password>${env.CENTRAL_TOKEN_PASSWORD}</password>
+              </server>
+            </servers>
+          </settings>
+          SETTINGS
+
+      # Run the full test suite before any deployment step.
+      - name: Run full test suite
+        run: mvn --batch-mode verify
+
+      # Package, sign, and upload to the Central Publisher Portal.
+      - name: Deploy to Maven Central (manual publish)
+        run: mvn --batch-mode -Prelease -DskipTests -Dgpg.useagent=false deploy
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
