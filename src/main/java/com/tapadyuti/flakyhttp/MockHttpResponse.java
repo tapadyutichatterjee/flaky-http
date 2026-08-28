@@ -7,6 +7,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
 
 /**
  * A mock implementation of {@link HttpResponse} used by {@link FlakyHttpClient}
@@ -18,6 +19,8 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
     private final int statusCode;
     private final T body;
     private final HttpRequest request;
+    private final HttpClient.Version version;
+    private final HttpHeaders headers;
 
     /**
      * Creates a new MockHttpResponse.
@@ -27,9 +30,20 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
      * @param request    The original request that triggered this response.
      */
     public MockHttpResponse(int statusCode, T body, HttpRequest request) {
+        this(statusCode, body, request, HttpClient.Version.HTTP_1_1);
+    }
+
+    public MockHttpResponse(int statusCode, T body, HttpRequest request, HttpClient.Version version) {
+        this(statusCode, body, request, version, HttpHeaders.of(Map.of(), (a, b) -> true));
+    }
+
+    public MockHttpResponse(int statusCode, T body, HttpRequest request, HttpClient.Version version,
+                            HttpHeaders headers) {
         this.statusCode = statusCode;
         this.body = body;
-        this.request = request;
+        this.request = Objects.requireNonNull(request, "request");
+        this.version = Objects.requireNonNull(version, "version");
+        this.headers = Objects.requireNonNull(headers, "headers");
     }
 
     @Override
@@ -39,7 +53,7 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
 
     @Override
     public HttpHeaders headers() {
-        return HttpHeaders.of(Map.of(), (a, b) -> true);
+        return headers;
     }
 
     @Override
@@ -62,16 +76,6 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
         return Optional.empty();
     }
 
-    public long contentLength() {
-        if (body == null) {
-            return 0;
-        }
-        if (body instanceof String) {
-            return ((String) body).length();
-        }
-        return -1; // Unknown content length for non-string bodies
-    }
-
     @Override
     public Optional<HttpResponse<T>> previousResponse() {
         return Optional.empty();
@@ -79,6 +83,6 @@ public class MockHttpResponse<T> implements HttpResponse<T> {
 
     @Override
     public HttpClient.Version version() {
-        return HttpClient.Version.HTTP_2;
+        return version;
     }
 }

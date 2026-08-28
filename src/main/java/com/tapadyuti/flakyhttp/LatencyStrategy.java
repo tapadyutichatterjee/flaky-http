@@ -1,6 +1,5 @@
 package com.tapadyuti.flakyhttp;
 
-import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -21,6 +20,9 @@ public interface LatencyStrategy {
      * @return A {@link FixedLatencyStrategy} instance.
      */
     static LatencyStrategy fixed(long delayMillis) {
+        if (delayMillis < 0) {
+            throw new IllegalArgumentException("delayMillis must not be negative");
+        }
         return new FixedLatencyStrategy(delayMillis);
     }
 
@@ -33,8 +35,8 @@ public interface LatencyStrategy {
      * @throws IllegalArgumentException if minMillis > maxMillis.
      */
     static LatencyStrategy random(long minMillis, long maxMillis) {
-        if (minMillis > maxMillis) {
-            throw new IllegalArgumentException("minMillis must be less than or equal to maxMillis");
+        if (minMillis < 0 || maxMillis < 0 || minMillis > maxMillis) {
+            throw new IllegalArgumentException("latency bounds must be non-negative and minMillis must not exceed maxMillis");
         }
         return new RandomLatencyStrategy(minMillis, maxMillis);
     }
@@ -50,6 +52,13 @@ public interface LatencyStrategy {
         public long getDelayMillis() {
             return delayMillis;
         }
+
+        @Override public boolean equals(Object other) {
+            return other instanceof FixedLatencyStrategy
+                    && delayMillis == ((FixedLatencyStrategy) other).delayMillis;
+        }
+        @Override public int hashCode() { return Long.hashCode(delayMillis); }
+        @Override public String toString() { return "fixed(" + delayMillis + "ms)"; }
     }
 
     class RandomLatencyStrategy implements LatencyStrategy {
@@ -66,7 +75,22 @@ public interface LatencyStrategy {
             if (minMillis == maxMillis) {
                 return minMillis;
             }
+            if (maxMillis == Long.MAX_VALUE) {
+                long candidate;
+                do {
+                    candidate = ThreadLocalRandom.current().nextLong() >>> 1;
+                } while (candidate < minMillis);
+                return candidate;
+            }
             return ThreadLocalRandom.current().nextLong(minMillis, maxMillis + 1);
         }
+
+        @Override public boolean equals(Object other) {
+            if (!(other instanceof RandomLatencyStrategy)) return false;
+            RandomLatencyStrategy that = (RandomLatencyStrategy) other;
+            return minMillis == that.minMillis && maxMillis == that.maxMillis;
+        }
+        @Override public int hashCode() { return 31 * Long.hashCode(minMillis) + Long.hashCode(maxMillis); }
+        @Override public String toString() { return "random(" + minMillis + "ms," + maxMillis + "ms)"; }
     }
 }

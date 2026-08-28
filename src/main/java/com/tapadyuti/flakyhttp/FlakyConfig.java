@@ -82,7 +82,7 @@ public final class FlakyConfig {
          * @throws IllegalArgumentException if rate is not between 0.0 and 1.0.
          */
         public Builder failureRate(double rate) {
-            if (rate < 0.0 || rate > 1.0) {
+            if (!Double.isFinite(rate) || rate < 0.0 || rate > 1.0) {
                 throw new IllegalArgumentException("Failure rate must be between 0.0 and 1.0");
             }
             this.failureRate = rate;
@@ -96,7 +96,7 @@ public final class FlakyConfig {
          * @return the builder instance.
          */
         public Builder latency(LatencyStrategy strategy) {
-            this.latencyStrategy = strategy;
+            this.latencyStrategy = Objects.requireNonNull(strategy, "strategy");
             return this;
         }
 
@@ -107,6 +107,9 @@ public final class FlakyConfig {
          * @return the builder instance.
          */
         public Builder errorStatus(int statusCode) {
+            if (statusCode < 400 || statusCode > 599) {
+                throw new IllegalArgumentException("Error status must be between 400 and 599");
+            }
             this.errorStatus = statusCode;
             return this;
         }

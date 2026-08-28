@@ -1,118 +1,136 @@
 package com.tapadyuti.flakyhttp;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import java.io.IOException;
+import java.net.Authenticator;
+import java.net.CookieHandler;
+import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.time.Instant;
-
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.*;
 
-@ExtendWith(MockitoExtension.class)
 class FlakyHttpClientTest {
+    private final HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("https://api.example.com/test")).GET().build();
 
-    @Mock
-    private HttpClient mockDelegate;
-
-    @Mock
-    private HttpResponse<String> mockResponse;
-
-    private HttpRequest request;
-
-    @BeforeEach
-    void setUp() {
-        request = HttpRequest.newBuilder()
-                .uri(URI.create("https://api.example.com/test"))
-                .GET()
-                .build();
+    @Test void injectsLatencyBeforeDelegating() throws Exception {
+        RecordingClient delegate = new RecordingClient();
+        try (FlakyHttpClient client = new FlakyHttpClient(delegate, FlakyConfig.builder()
+                .latency(LatencyStrategy.fixed(50)).build())) {
+            long start = System.nanoTime();
+            client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertTrue(Duration.ofNanos(System.nanoTime() - start).toMillis() >= 45);
+            assertEquals(1, delegate.calls.get());
+        }
     }
 
-    @Test
-    void testLatencyInjection() throws IOException, InterruptedException {
-        long delay = 200L;
-        FlakyConfig config = FlakyConfig.builder()
-                .latency(LatencyStrategy.fixed(delay))
-                .failureRate(0.0) // No failures, just latency
-                .build();
-
-        FlakyHttpClient flakyClient = new FlakyHttpClient(mockDelegate, config);
-
-        when(mockDelegate.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-                .thenReturn((HttpResponse) mockResponse);
-
-        Instant start = Instant.now();
-        flakyClient.send(request, HttpResponse.BodyHandlers.ofString());
-        Instant end = Instant.now();
-
-        long actualDuration = Duration.between(start, end).toMillis();
-        assertTrue(actualDuration >= delay, "Expected latency of at least " + delay + "ms, but got " + actualDuration + "ms");
+    @Test void syntheticFailureUsesConfiguredStatusAndBodyHandler() throws Exception {
+        RecordingClient delegate = new RecordingClient();
+        try (FlakyHttpClient client = new FlakyHttpClient(delegate, FlakyConfig.builder()
+                .failureRate(1).errorStatus(429).build())) {
+            HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            assertEquals(429, response.statusCode());
+            assertEquals("", response.body());
+            assertEquals("0", response.headers().firstValue("content-length").orElseThrow());
+            assertEquals(0, delegate.calls.get());
+        }
     }
 
-    @Test
-    void testFailureRateTriggersMockResponse() throws IOException, InterruptedException {
-        FlakyConfig config = FlakyConfig.builder()
-                .failureRate(1.0) // 100% failure
-                .errorStatus(429)
-                .build();
-
-        FlakyHttpClient flakyClient = new FlakyHttpClient(mockDelegate, config);
-
-        HttpResponse<String> response = flakyClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-        assertEquals(429, response.statusCode());
-        verifyNoInteractions(mockDelegate);
+    @Test void nonTargetedUrlDelegatesWithoutChaos() throws Exception {
+        RecordingClient delegate = new RecordingClient();
+        try (FlakyHttpClient client = new FlakyHttpClient(delegate, FlakyConfig.builder()
+                .failureRate(1).targetUrls(".*google\\.com.*").build())) {
+            assertSame(delegate.response, client.send(request, HttpResponse.BodyHandlers.ofString()));
+            assertEquals(1, delegate.calls.get());
+        }
     }
 
-    @Test
-    void testZeroFailureRateDelegatesToRealClient() throws IOException, InterruptedException {
-        FlakyConfig config = FlakyConfig.builder()
-                .failureRate(0.0) // 0% failure
-                .build();
-
-        FlakyHttpClient flakyClient = new FlakyHttpClient(mockDelegate, config);
-
-        when(mockDelegate.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-                .thenReturn((HttpResponse) mockResponse);
-
-        HttpResponse<String> response = flakyClient.send(request, HttpResponse.BodyHandlers.ofString());
-
-        assertEquals(mockResponse, response);
-        verify(mockDelegate, times(1)).send(eq(request), any());
+    @Test void asyncFailureIsDelayedAndDoesNotDelegate() throws Exception {
+        RecordingClient delegate = new RecordingClient();
+        try (FlakyHttpClient client = new FlakyHttpClient(delegate, FlakyConfig.builder()
+                .failureRate(1).latency(LatencyStrategy.fixed(30)).build())) {
+            CompletableFuture<HttpResponse<String>> future = client.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+            assertFalse(future.isDone());
+            assertEquals(500, future.get(1, TimeUnit.SECONDS).statusCode());
+            assertEquals(0, delegate.calls.get());
+        }
     }
 
-    @Test
-    void testTargetUrlFiltering() throws IOException, InterruptedException {
-        // Config only targets "google.com"
-        FlakyConfig config = FlakyConfig.builder()
-                .failureRate(1.0)
-                .targetUrls(".*google\\.com.*")
-                .build();
+    @Test void asyncCancellationPreventsDelayedDelegation() throws Exception {
+        RecordingClient delegate = new RecordingClient();
+        try (FlakyHttpClient client = new FlakyHttpClient(delegate, FlakyConfig.builder()
+                .latency(LatencyStrategy.fixed(150)).build())) {
+            CompletableFuture<HttpResponse<String>> future = client.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+            assertTrue(future.cancel(true));
+            Thread.sleep(200);
+            assertEquals(0, delegate.calls.get());
+        }
+    }
 
-        FlakyHttpClient flakyClient = new FlakyHttpClient(mockDelegate, config);
+    @Test void interruptionAbortsBeforeDelegation() throws Exception {
+        RecordingClient delegate = new RecordingClient();
+        try (FlakyHttpClient client = new FlakyHttpClient(delegate, FlakyConfig.builder()
+                .latency(LatencyStrategy.fixed(1_000)).build())) {
+            Thread.currentThread().interrupt();
+            assertThrows(InterruptedException.class, () -> client.send(request, HttpResponse.BodyHandlers.ofString()));
+            assertEquals(0, delegate.calls.get());
+        } finally { Thread.interrupted(); }
+    }
 
-        // Request to example.com (non-target)
-        HttpRequest stableRequest = HttpRequest.newBuilder()
-                .uri(URI.create("https://example.com"))
-                .GET()
-                .build();
+    @Test void validatesConfigurationBoundaries() {
+        assertThrows(IllegalArgumentException.class, () -> FlakyConfig.builder().failureRate(Double.NaN));
+        assertThrows(IllegalArgumentException.class, () -> FlakyConfig.builder().errorStatus(200));
+        assertThrows(NullPointerException.class, () -> FlakyConfig.builder().latency(null));
+        assertThrows(IllegalArgumentException.class, () -> LatencyStrategy.fixed(-1));
+        assertThrows(IllegalArgumentException.class, () -> LatencyStrategy.random(-1, 2));
+        assertEquals(Long.MAX_VALUE, LatencyStrategy.random(Long.MAX_VALUE, Long.MAX_VALUE).getDelayMillis());
+    }
 
-        when(mockDelegate.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
-                .thenReturn((HttpResponse) mockResponse);
-
-        HttpResponse<String> response = flakyClient.send(stableRequest, HttpResponse.BodyHandlers.ofString());
-
-        // Should NOT have failed because URL doesn't match
-        assertEquals(mockResponse, response);
-        verify(mockDelegate, times(1)).send(eq(stableRequest), any());
+    private static final class RecordingClient extends HttpClient {
+        private final AtomicInteger calls = new AtomicInteger();
+        private final HttpResponse<String> response = new MockHttpResponse<>(200, "ok",
+                HttpRequest.newBuilder(URI.create("https://api.example.com/test")).build());
+        public Optional<CookieHandler> cookieHandler() { return Optional.empty(); }
+        public Optional<Duration> connectTimeout() { return Optional.empty(); }
+        public Redirect followRedirects() { return Redirect.NEVER; }
+        public Optional<ProxySelector> proxy() { return Optional.empty(); }
+        public SSLContext sslContext() { return defaultSslContext(); }
+        public SSLParameters sslParameters() { return new SSLParameters(); }
+        public Optional<Authenticator> authenticator() { return Optional.empty(); }
+        public Version version() { return Version.HTTP_1_1; }
+        public Optional<Executor> executor() { return Optional.empty(); }
+        @SuppressWarnings("unchecked")
+        public <T> HttpResponse<T> send(HttpRequest request, HttpResponse.BodyHandler<T> handler)
+                throws IOException, InterruptedException {
+            calls.incrementAndGet();
+            return (HttpResponse<T>) response;
+        }
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request, HttpResponse.BodyHandler<T> handler) {
+            try { return CompletableFuture.completedFuture(send(request, handler)); }
+            catch (Exception e) { return failedFuture(e); }
+        }
+        public <T> CompletableFuture<HttpResponse<T>> sendAsync(HttpRequest request,
+                HttpResponse.BodyHandler<T> handler, HttpResponse.PushPromiseHandler<T> pushPromiseHandler) {
+            return sendAsync(request, handler);
+        }
+        private static SSLContext defaultSslContext() {
+            try { return SSLContext.getDefault(); }
+            catch (Exception e) { throw new IllegalStateException(e); }
+        }
+        private static <T> CompletableFuture<T> failedFuture(Throwable error) {
+            CompletableFuture<T> future = new CompletableFuture<>();
+            future.completeExceptionally(error);
+            return future;
+        }
     }
 }

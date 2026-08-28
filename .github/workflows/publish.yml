@@ -5,6 +5,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      version:
+        description: Release version (for example, 1.0.0)
+        required: true
+        type: string
 
 # Least-privilege: read-only repository access is sufficient.
 permissions:
@@ -60,7 +65,10 @@ jobs:
 
       # Package, sign, and upload to the Central Publisher Portal.
       - name: Deploy to Maven Central (manual publish)
-        run: mvn --batch-mode -Prelease -DskipTests -Dgpg.useagent=false deploy
+        run: |
+          VERSION="${{ inputs.version || github.ref_name }}"
+          VERSION="${VERSION#v}"
+          mvn --batch-mode -Prelease -DskipTests -Dgpg.useagent=false -Drevision="${VERSION}" deploy
         env:
           CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
           CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
