@@ -82,7 +82,7 @@ Artificial latency occurs before delegation, so an `HttpRequest` timeout enforce
 
 ## Installation
 
-After version `1.0.0` is available from Maven Central, add:
+Flaky HTTP `1.0.0` is available from Maven Central. Add:
 
 ```xml
 <dependency>
@@ -97,8 +97,6 @@ For Gradle:
 ```gradle
 testImplementation("com.tapadyuti:flaky-http:1.0.0")
 ```
-
-Until the first Central release is published, clone the repository and install it locally with `mvn install`.
 
 ## Quick start
 
